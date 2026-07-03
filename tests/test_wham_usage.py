@@ -131,3 +131,30 @@ def test_build_report_only_contains_expected_fields():
     assert "周窗口重置时间：2026-07-07 20:16:41" in report
     assert "access_token" not in report
     assert "refresh_token" not in report
+
+
+def test_fetch_snapshot_delegates_to_parsers(monkeypatch):
+    credits_payload = {"credits": [{"granted_at": "2026-07-01T20:03:58.215399Z", "expires_at": "2026-07-31T20:03:58.215399Z"}]}
+    usage_payload = {
+        "rate_limit": {
+            "primary_window": {"used_percent": 58, "reset_at": 1783061876},
+            "secondary_window": {"used_percent": 42, "reset_at": 1783426601},
+        }
+    }
+
+    monkeypatch.setattr(wham_usage, "load_auth", lambda path: ("token", "account"))
+    calls = []
+
+    def fake_request_json(url, headers):
+        calls.append((url, headers))
+        if url.endswith("rate-limit-reset-credits"):
+            return credits_payload
+        return usage_payload
+
+    monkeypatch.setattr(wham_usage, "request_json", fake_request_json)
+
+    snapshot = wham_usage.fetch_snapshot("/tmp/auth.json")
+
+    assert len(calls) == 2
+    assert snapshot.credits[0].granted_at == "2026-07-02 04:03:58"
+    assert snapshot.windows[0].remaining_percent == 42

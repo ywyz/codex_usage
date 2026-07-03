@@ -8,7 +8,7 @@
 
 默认不会打印 `access_token`、`refresh_token`、`cookie` 或完整唯一 ID。
 
-## 运行
+## 命令行运行
 
 ```bash
 cd /home/admin/code/codex-wham-usage
@@ -20,6 +20,36 @@ python3 wham_usage.py
 ```bash
 python3 wham_usage.py --auth-file /path/to/auth.json
 ```
+
+## 桌面小插件
+
+```bash
+cd /home/admin/code/codex-wham-usage
+python3 desktop_widget.py
+```
+
+可选刷新间隔：
+
+```bash
+python3 desktop_widget.py --refresh-seconds 300
+python3 desktop_widget.py --refresh-seconds 600
+```
+
+限制是 `300` 到 `600` 秒，也就是每 `5` 到 `10` 分钟刷新一次。
+
+Ubuntu 和 Windows 都直接用 Python 自带的 `tkinter`，不需要额外安装 GUI 依赖。
+
+### Ubuntu
+
+1. 确认本机能运行 `python3 -m tkinter`
+2. 在仓库目录执行 `python3 desktop_widget.py`
+3. 如果想做桌面启动器，可以把命令写进 `.desktop` 文件
+
+### Windows
+
+1. 确认安装的是带 `tkinter` 的 Python
+2. 双击运行 `desktop_widget.py`，或者在 PowerShell 里执行 `python desktop_widget.py`
+3. 如果想固定到桌面，可以创建一个指向该命令的快捷方式
 
 ## 测试
 

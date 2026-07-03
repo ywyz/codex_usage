@@ -35,6 +35,12 @@ class UsageWindow:
     reset_at: str
 
 
+@dataclass(frozen=True)
+class UsageSnapshot:
+    credits: list[CreditWindow]
+    windows: list[UsageWindow]
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="查询 Codex 账户的 rate-limit reset credits 与 WHAM 用量。"
@@ -148,6 +154,25 @@ def parse_usage_windows(payload: dict[str, Any]) -> list[UsageWindow]:
     return windows
 
 
+def fetch_snapshot(auth_file: str) -> UsageSnapshot:
+    access_token, account_id = load_auth(auth_file)
+    credits_payload = request_json(
+        "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits",
+        headers={"Authorization": f"Bearer {access_token}"},
+    )
+    usage_payload = request_json(
+        "https://chatgpt.com/backend-api/wham/usage",
+        headers={
+            "Authorization": f"Bearer {access_token}",
+            "ChatGPT-Account-Id": account_id,
+        },
+    )
+    return UsageSnapshot(
+        credits=parse_credits(credits_payload),
+        windows=parse_usage_windows(usage_payload),
+    )
+
+
 def build_report(credits: list[CreditWindow], windows: list[UsageWindow]) -> str:
     lines = ["重置卡："]
     if credits:
@@ -172,22 +197,8 @@ def build_report(credits: list[CreditWindow], windows: list[UsageWindow]) -> str
 def main() -> int:
     args = parse_args()
     try:
-        access_token, account_id = load_auth(args.auth_file)
-        credits_payload = request_json(
-            "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits",
-            headers={"Authorization": f"Bearer {access_token}"},
-        )
-        usage_payload = request_json(
-            "https://chatgpt.com/backend-api/wham/usage",
-            headers={
-                "Authorization": f"Bearer {access_token}",
-                "ChatGPT-Account-Id": account_id,
-            },
-        )
-        report = build_report(
-            parse_credits(credits_payload),
-            parse_usage_windows(usage_payload),
-        )
+        snapshot = fetch_snapshot(args.auth_file)
+        report = build_report(snapshot.credits, snapshot.windows)
         print(report)
         return 0
     except WhamUsageError as exc:
