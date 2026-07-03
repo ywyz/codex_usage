@@ -49,3 +49,12 @@ def test_report_contract_matches_requested_chinese_output():
     assert "5小时窗口重置时间：2026-07-03 14:57:56" in report
     assert "周窗口余额：58%（已用 42%）" in report
     assert "周窗口重置时间：2026-07-07 20:16:41" in report
+
+
+def test_proxy_resolution_contract_prefers_cli_then_environment(monkeypatch):
+    wham_usage = load_module()
+
+    monkeypatch.setenv("HTTPS_PROXY", "http://env-proxy:7890")
+
+    assert wham_usage.resolve_proxy("http://cli-proxy:7890") == "http://cli-proxy:7890"
+    assert wham_usage.resolve_proxy() == "http://env-proxy:7890"

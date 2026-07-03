@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -145,7 +146,7 @@ def test_fetch_snapshot_delegates_to_parsers(monkeypatch):
     monkeypatch.setattr(wham_usage, "load_auth", lambda path: ("token", "account"))
     calls = []
 
-    def fake_request_json(url, headers):
+    def fake_request_json(url, headers, proxy_server=None):
         calls.append((url, headers))
         if url.endswith("rate-limit-reset-credits"):
             return credits_payload
@@ -153,8 +154,54 @@ def test_fetch_snapshot_delegates_to_parsers(monkeypatch):
 
     monkeypatch.setattr(wham_usage, "request_json", fake_request_json)
 
-    snapshot = wham_usage.fetch_snapshot("/tmp/auth.json")
+    snapshot = wham_usage.fetch_snapshot("/tmp/auth.json", "http://127.0.0.1:7890")
 
     assert len(calls) == 2
     assert snapshot.credits[0].granted_at == "2026-07-02 04:03:58"
     assert snapshot.windows[0].remaining_percent == 42
+
+
+def test_resolve_proxy_prefers_cli_value(monkeypatch):
+    for key in (
+        "HTTPS_PROXY",
+        "https_proxy",
+        "HTTP_PROXY",
+        "http_proxy",
+        "ALL_PROXY",
+        "all_proxy",
+    ):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("HTTPS_PROXY", "http://env-proxy:7890")
+
+    assert wham_usage.resolve_proxy("http://cli-proxy:7890") == "http://cli-proxy:7890"
+
+
+def test_resolve_proxy_reads_environment(monkeypatch):
+    for key in (
+        "HTTPS_PROXY",
+        "https_proxy",
+        "HTTP_PROXY",
+        "http_proxy",
+        "ALL_PROXY",
+        "all_proxy",
+    ):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("http_proxy", "http://env-proxy:7890")
+
+    assert wham_usage.resolve_proxy() == "http://env-proxy:7890"
+
+
+def test_build_url_opener_uses_proxy_handler(monkeypatch):
+    captured = {}
+
+    def fake_build_opener(handler=None):
+        captured["handler"] = handler
+        return object()
+
+    monkeypatch.setattr(wham_usage.urllib.request, "build_opener", fake_build_opener)
+
+    opener = wham_usage.build_url_opener("http://127.0.0.1:7890")
+
+    assert opener is not None
+    assert captured["handler"].proxies["http"] == "http://127.0.0.1:7890"
+    assert captured["handler"].proxies["https"] == "http://127.0.0.1:7890"

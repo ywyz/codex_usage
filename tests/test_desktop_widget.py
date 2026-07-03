@@ -76,3 +76,15 @@ def test_build_widget_state_for_error():
     assert state.subtitle == "数据刷新失败"
     assert state.status_color == "#b42318"
     assert "无法读取重置卡信息" in state.credit_lines
+
+
+def test_parse_args_accepts_proxy_server(monkeypatch):
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["desktop_widget.py", "--proxy-server", "http://127.0.0.1:7890"],
+    )
+
+    args = desktop_widget.parse_args()
+
+    assert args.proxy_server == "http://127.0.0.1:7890"

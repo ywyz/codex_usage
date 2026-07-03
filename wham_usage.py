@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import urllib.error
 import urllib.request
@@ -50,6 +51,10 @@ def parse_args() -> argparse.Namespace:
         default=str(Path.home() / ".codex" / "auth.json"),
         help="auth.json 路径，默认读取 ~/.codex/auth.json",
     )
+    parser.add_argument(
+        "--proxy-server",
+        help="代理地址，例如 http://127.0.0.1:7890。未传时自动读取环境变量代理。",
+    )
     return parser.parse_args()
 
 
@@ -82,7 +87,45 @@ def utc_to_beijing_text(value: str | int | float) -> str:
     return beijing.strftime("%Y-%m-%d %H:%M:%S")
 
 
-def request_json(url: str, headers: dict[str, str]) -> dict[str, Any]:
+def resolve_proxy(proxy_server: str | None = None) -> str | None:
+    if proxy_server:
+        return proxy_server
+
+    proxy_keys = [
+        "HTTPS_PROXY",
+        "https_proxy",
+        "HTTP_PROXY",
+        "http_proxy",
+        "ALL_PROXY",
+        "all_proxy",
+    ]
+    for key in proxy_keys:
+        value = os.environ.get(key)
+        if value:
+            return value
+    return None
+
+
+def build_url_opener(proxy_server: str | None = None) -> urllib.request.OpenerDirector:
+    resolved_proxy = resolve_proxy(proxy_server)
+    if not resolved_proxy:
+        return urllib.request.build_opener()
+
+    return urllib.request.build_opener(
+        urllib.request.ProxyHandler(
+            {
+                "http": resolved_proxy,
+                "https": resolved_proxy,
+            }
+        )
+    )
+
+
+def request_json(
+    url: str,
+    headers: dict[str, str],
+    proxy_server: str | None = None,
+) -> dict[str, Any]:
     request = urllib.request.Request(
         url,
         headers={
@@ -92,8 +135,9 @@ def request_json(url: str, headers: dict[str, str]) -> dict[str, Any]:
             **({} if "ChatGPT-Account-Id" not in headers else {"ChatGPT-Account-Id": headers["ChatGPT-Account-Id"]}),
         },
     )
+    opener = build_url_opener(proxy_server)
     try:
-        with urllib.request.urlopen(request, timeout=30) as response:
+        with opener.open(request, timeout=30) as response:
             return json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
         if exc.code == 401:
@@ -150,15 +194,16 @@ def parse_usage_windows(payload: dict[str, Any]) -> list[UsageWindow]:
                 remaining_percent=remaining_percent,
                 reset_at=utc_to_beijing_text(reset_at),
             )
-        )
+            )
     return windows
 
 
-def fetch_snapshot(auth_file: str) -> UsageSnapshot:
+def fetch_snapshot(auth_file: str, proxy_server: str | None = None) -> UsageSnapshot:
     access_token, account_id = load_auth(auth_file)
     credits_payload = request_json(
         "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits",
         headers={"Authorization": f"Bearer {access_token}"},
+        proxy_server=proxy_server,
     )
     usage_payload = request_json(
         "https://chatgpt.com/backend-api/wham/usage",
@@ -166,6 +211,7 @@ def fetch_snapshot(auth_file: str) -> UsageSnapshot:
             "Authorization": f"Bearer {access_token}",
             "ChatGPT-Account-Id": account_id,
         },
+        proxy_server=proxy_server,
     )
     return UsageSnapshot(
         credits=parse_credits(credits_payload),
@@ -197,7 +243,7 @@ def build_report(credits: list[CreditWindow], windows: list[UsageWindow]) -> str
 def main() -> int:
     args = parse_args()
     try:
-        snapshot = fetch_snapshot(args.auth_file)
+        snapshot = fetch_snapshot(args.auth_file, args.proxy_server)
         report = build_report(snapshot.credits, snapshot.windows)
         print(report)
         return 0

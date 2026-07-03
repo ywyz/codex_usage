@@ -44,6 +44,10 @@ def parse_args() -> argparse.Namespace:
         default=DEFAULT_REFRESH_SECONDS,
         help="刷新间隔，单位秒，必须在 300 到 600 之间，默认 300",
     )
+    parser.add_argument(
+        "--proxy-server",
+        help="代理地址，例如 http://127.0.0.1:7890。未传时自动读取环境变量代理。",
+    )
     return parser.parse_args()
 
 
@@ -95,9 +99,15 @@ def build_widget_state(
 
 
 class CodexUsageWidget:
-    def __init__(self, auth_file: str, refresh_seconds: int) -> None:
+    def __init__(
+        self,
+        auth_file: str,
+        refresh_seconds: int,
+        proxy_server: str | None,
+    ) -> None:
         self.auth_file = auth_file
         self.refresh_seconds = validate_refresh_seconds(refresh_seconds)
+        self.proxy_server = proxy_server
         self.root = tk.Tk()
         self.root.title("Codex 用量看板")
         self.root.geometry("420x360")
@@ -187,7 +197,7 @@ class CodexUsageWidget:
 
     def _refresh_worker(self) -> None:
         try:
-            snapshot = fetch_snapshot(self.auth_file)
+            snapshot = fetch_snapshot(self.auth_file, self.proxy_server)
             fetched_at = datetime.now()
             state = build_widget_state(snapshot, None, fetched_at)
         except WhamUsageError as exc:
@@ -213,6 +223,7 @@ def main() -> int:
     widget = CodexUsageWidget(
         auth_file=args.auth_file,
         refresh_seconds=validate_refresh_seconds(args.refresh_seconds),
+        proxy_server=args.proxy_server,
     )
     widget.run()
     return 0
