@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import TYPE_CHECKING, Callable
+from typing import TYPE_CHECKING
 from urllib.parse import parse_qs, urlparse
 
 from wham_usage import UsageSnapshot, WhamUsageError, fetch_snapshot
@@ -19,7 +19,6 @@ from wham_usage import UsageSnapshot, WhamUsageError, fetch_snapshot
 if TYPE_CHECKING:
     import tkinter as tk
     from tkinter import ttk
-    from PIL import Image
 
 
 DEFAULT_REFRESH_SECONDS = 300
@@ -145,92 +144,6 @@ def load_tk_modules():
     return tk, ttk
 
 
-def load_tray_modules():
-    try:
-        import pystray
-        from PIL import Image, ImageDraw
-    except ModuleNotFoundError:
-        return None, None, None
-    return pystray, Image, ImageDraw
-
-
-def create_tray_icon_image(image_module, image_draw_module):
-    image = image_module.new("RGBA", (64, 64), (15, 23, 42, 255))
-    draw = image_draw_module.Draw(image)
-    draw.rounded_rectangle((4, 4, 60, 60), radius=14, fill=(245, 158, 11, 255))
-    draw.rounded_rectangle((12, 12, 52, 52), radius=10, fill=(17, 24, 39, 255))
-    draw.rectangle((18, 26, 46, 34), fill=(74, 222, 128, 255))
-    draw.rectangle((18, 38, 38, 44), fill=(229, 238, 252, 255))
-    return image
-
-
-def format_tray_title(state: WidgetState | None = None) -> str:
-    base = "Codex 用量看板"
-    if state is None or not state.windows:
-        return base
-    parts = [f"{window.name}{window.remaining_percent}%" for window in state.windows]
-    return f"{base} | {' / '.join(parts)}"
-
-
-class TrayController:
-    def __init__(
-        self,
-        on_open: Callable[[], None],
-        on_hide: Callable[[], None],
-        on_refresh: Callable[[], None],
-        on_exit: Callable[[], None],
-    ) -> None:
-        self.on_open = on_open
-        self.on_hide = on_hide
-        self.on_refresh = on_refresh
-        self.on_exit = on_exit
-        pystray_module, image_module, image_draw_module = load_tray_modules()
-        self.available = (
-            pystray_module is not None
-            and image_module is not None
-            and image_draw_module is not None
-        )
-        self.pystray = pystray_module
-        self.icon = None
-        if self.available:
-            menu = pystray_module.Menu(
-                pystray_module.MenuItem("打开面板", self._handle_open),
-                pystray_module.MenuItem("隐藏面板", self._handle_hide),
-                pystray_module.MenuItem("立即刷新", self._handle_refresh),
-                pystray_module.MenuItem("退出", self._handle_exit),
-            )
-            self.icon = pystray_module.Icon(
-                "codex-usage-widget",
-                create_tray_icon_image(image_module, image_draw_module),
-                "Codex 用量看板",
-                menu,
-            )
-
-    def _handle_open(self, icon=None, item=None) -> None:
-        self.on_open()
-
-    def _handle_hide(self, icon=None, item=None) -> None:
-        self.on_hide()
-
-    def _handle_refresh(self, icon=None, item=None) -> None:
-        self.on_refresh()
-
-    def _handle_exit(self, icon=None, item=None) -> None:
-        self.on_exit()
-
-    def run(self) -> None:
-        if self.available and self.icon is not None:
-            self.icon.run_detached()
-
-    def update_title(self, state: WidgetState) -> None:
-        if self.available and self.icon is not None:
-            self.icon.title = format_tray_title(state)
-
-    def stop(self) -> None:
-        if self.available and self.icon is not None:
-            self.icon.stop()
-
-
 class CodexUsageWidget:
     def __init__(
         self,
@@ -252,7 +165,6 @@ class CodexUsageWidget:
         self.root.geometry("560x680")
         self.root.minsize(520, 620)
         self._theme = "dark"
-        self._visible = False
 
         self.title_var = tk.StringVar(value="Codex 用量看板")
         self.subtitle_var = tk.StringVar(value="准备加载...")
@@ -263,16 +175,9 @@ class CodexUsageWidget:
         self.proxy_entry: ttk.Entry
         self.credit_frame: ttk.Frame
         self.window_frame: ttk.Frame
+        self.window_progressbars: list[tuple[WindowDisplay, ttk.Progressbar, ttk.Label]] = []
         self._refresh_job: str | None = None
-        self.tray = TrayController(
-            on_open=self.show_panel,
-            on_hide=self.hide_panel,
-            on_refresh=self.refresh_now,
-            on_exit=self.exit_app,
-        )
         self._build_ui()
-        self.root.protocol("WM_DELETE_WINDOW", self.hide_panel)
-        self.root.withdraw()
 
     def _apply_theme(self) -> None:
         ttk = self._ttk
@@ -504,25 +409,6 @@ class CodexUsageWidget:
         if current_state is not None:
             self._apply_state(current_state)
 
-    def show_panel(self) -> None:
-        self._visible = True
-        self.root.deiconify()
-        self.root.lift()
-        try:
-            self.root.focus_force()
-        except self._tk.TclError:
-            pass
-
-    def hide_panel(self) -> None:
-        self._visible = False
-        self.root.withdraw()
-
-    def exit_app(self) -> None:
-        if self._refresh_job is not None:
-            self.root.after_cancel(self._refresh_job)
-        self.tray.stop()
-        self.root.after(0, self.root.destroy)
-
     def refresh_now(self) -> None:
         self.status_var.set("正在刷新...")
         thread = threading.Thread(target=self._refresh_worker, daemon=True)
@@ -633,7 +519,6 @@ class CodexUsageWidget:
         self.proxy_var.set(state.proxy_server)
         self.status_var.set(state.status_text)
         self.status_label.configure(foreground=state.status_color)
-        self.tray.update_title(state)
         self._render_windows(state)
         self._render_credits(state)
         if self._refresh_job is not None:
@@ -641,7 +526,6 @@ class CodexUsageWidget:
         self._refresh_job = self.root.after(self.refresh_seconds * 1000, self.refresh_now)
 
     def run(self) -> None:
-        self.tray.run()
         self.refresh_now()
         self.root.mainloop()
 
@@ -930,21 +814,6 @@ class BrowserDashboard:
         self.refresh_seconds = validate_refresh_seconds(refresh_seconds)
         self.proxy_server = proxy_server or ""
         self.no_browser = no_browser
-        self.url: str | None = None
-        self.server = None
-        self.tray = TrayController(
-            on_open=self.open_panel,
-            on_hide=self.noop,
-            on_refresh=self.open_panel,
-            on_exit=self.stop,
-        )
-
-    def noop(self) -> None:
-        return
-
-    def open_panel(self) -> None:
-        if self.url:
-            webbrowser.open(self.url, new=1)
 
     def _make_handler(self):
         dashboard = self
@@ -989,23 +858,17 @@ class BrowserDashboard:
         return DashboardHandler
 
     def run(self) -> None:
-        self.server = ThreadingHTTPServer(("127.0.0.1", 0), self._make_handler())
-        self.url = f"http://127.0.0.1:{self.server.server_port}/"
-        print(f"tkinter 不可用，已切换到浏览器看板模式：{self.url}")
-        self.tray.run()
+        server = ThreadingHTTPServer(("127.0.0.1", 0), self._make_handler())
+        url = f"http://127.0.0.1:{server.server_port}/"
+        print(f"tkinter 不可用，已切换到浏览器看板模式：{url}")
         if not self.no_browser:
-            self.open_panel()
+            webbrowser.open(url, new=1)
         try:
-            self.server.serve_forever()
+            server.serve_forever()
         except KeyboardInterrupt:
             pass
         finally:
-            self.tray.stop()
-            self.server.server_close()
-
-    def stop(self) -> None:
-        if self.server is not None:
-            self.server.shutdown()
+            server.server_close()
 
 
 def main() -> int:

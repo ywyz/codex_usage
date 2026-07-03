@@ -58,7 +58,6 @@ python3 desktop_widget.py --no-browser
 如果当前 Python 没有 `tkinter`，程序会自动回退到本地浏览器看板模式，并启动一个只绑定 `127.0.0.1` 的本地页面。
 当前界面支持：
 
-- 默认驻留系统托盘，不占任务栏位置
 - 自动跟随系统明暗模式的浏览器看板
 - 原生窗口里的明暗主题切换
 - 5 小时和周额度的百分比进度条
@@ -67,20 +66,18 @@ python3 desktop_widget.py --no-browser
 ### Ubuntu
 
 1. 直接运行 `python3 desktop_widget.py`
-2. 如果系统支持托盘，程序会先驻留系统托盘，不占任务栏位置
-3. 点击托盘菜单里的“打开面板”才会弹出原生小窗
-4. 如果没有 `tkinter`，会自动打印本地地址并打开浏览器看板
-5. 如果想只打印地址不自动开浏览器，用 `python3 desktop_widget.py --no-browser`
-6. 如果终端里已经设置了 `HTTPS_PROXY` 之类的环境变量，小插件会自动复用
+2. 如果有 `tkinter`，会弹原生小窗
+3. 如果没有 `tkinter`，会自动打印本地地址并打开浏览器看板
+4. 如果想只打印地址不自动开浏览器，用 `python3 desktop_widget.py --no-browser`
+5. 如果终端里已经设置了 `HTTPS_PROXY` 之类的环境变量，小插件会自动复用
 
 ### Windows
 
 1. 确认安装的是带 `tkinter` 的 Python
 2. 双击运行 `desktop_widget.py`，或者在 PowerShell 里执行 `python desktop_widget.py`
-3. 启动后默认进入系统托盘，不占任务栏位置
-4. 如果某个 Python 环境没有 `tkinter`，也会自动回退到浏览器看板
-5. 如果想固定到桌面，可以创建一个指向该命令的快捷方式
-6. 如果 PowerShell 里已经设置了 `$env:HTTPS_PROXY` 或 `$env:HTTP_PROXY`，小插件会自动复用
+3. 如果某个 Python 环境没有 `tkinter`，也会自动回退到浏览器看板
+4. 如果想固定到桌面，可以创建一个指向该命令的快捷方式
+5. 如果 PowerShell 里已经设置了 `$env:HTTPS_PROXY` 或 `$env:HTTP_PROXY`，小插件会自动复用
 
 ## 打包
 
