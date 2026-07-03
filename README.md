@@ -73,6 +73,46 @@ python3 desktop_widget.py --no-browser
 4. 如果想固定到桌面，可以创建一个指向该命令的快捷方式
 5. 如果 PowerShell 里已经设置了 `$env:HTTPS_PROXY` 或 `$env:HTTP_PROXY`，小插件会自动复用
 
+## 打包
+
+### Linux
+
+```bash
+cd /home/admin/code/codex-wham-usage
+bash scripts/build_linux.sh
+```
+
+产物位置：
+
+- `release/linux/codex-usage-widget-linux-x86_64-<timestamp>.tar.gz`
+
+解压后直接运行里面的 `codex-usage-widget`。
+
+### Windows
+
+在 Windows PowerShell 里运行：
+
+```powershell
+cd C:\path\to\codex-wham-usage
+.\scripts\build_windows.ps1
+```
+
+产物位置：
+
+- `release/windows/codex-usage-widget-windows-x86_64-<timestamp>.zip`
+
+解压后运行 `codex-usage-widget.exe`。
+
+### GitHub Actions
+
+推送到 `main` 或手动触发后，工作流 [package.yml](/home/admin/code/codex-wham-usage/.github/workflows/package.yml) 会自动生成：
+
+- Ubuntu `.tar.gz`
+- Windows `.zip`
+
+下载路径在 GitHub Actions 的 `Artifacts`。
+Windows 本地打包入口就是 `scripts/build_windows.ps1`。
+
 ## 测试
 
 ```bash
