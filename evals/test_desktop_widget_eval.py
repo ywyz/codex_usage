@@ -96,3 +96,29 @@ def test_browser_fallback_contract_renders_dashboard_html():
     assert "prefers-color-scheme: dark" in html_text
     assert "应用代理" in html_text
     assert "width:57%" in html_text
+
+
+def test_tray_title_contract_exposes_remaining_percent():
+    desktop_widget = load_module("desktop_widget", "desktop_widget.py")
+
+    title = desktop_widget.format_tray_title(
+        desktop_widget.WidgetState(
+            title="Codex 用量看板",
+            subtitle="",
+            credits=[],
+            windows=[
+                desktop_widget.WindowDisplay(
+                    name="5小时窗口",
+                    remaining_percent=35,
+                    used_percent=65,
+                    reset_at="2026-07-03 14:57:56",
+                )
+            ],
+            proxy_server="",
+            status_text="ok",
+            status_color="#4ade80",
+            error_message=None,
+        )
+    )
+
+    assert "5小时窗口35%" in title

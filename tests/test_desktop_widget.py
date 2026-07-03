@@ -140,3 +140,34 @@ def test_render_browser_html_contains_auto_refresh():
     assert "width:35%" in html_text
     assert 'value="http://127.0.0.1:7890"' in html_text
     assert "立即刷新" in html_text
+
+
+def test_format_tray_title_summarizes_remaining_percent():
+    state = desktop_widget.WidgetState(
+        title="Codex 用量看板",
+        subtitle="",
+        credits=[],
+        windows=[
+            desktop_widget.WindowDisplay(
+                name="5小时窗口",
+                remaining_percent=35,
+                used_percent=65,
+                reset_at="2026-07-03 14:57:56",
+            ),
+            desktop_widget.WindowDisplay(
+                name="周窗口",
+                remaining_percent=57,
+                used_percent=43,
+                reset_at="2026-07-07 20:16:41",
+            ),
+        ],
+        proxy_server="",
+        status_text="ok",
+        status_color="#4ade80",
+        error_message=None,
+    )
+
+    title = desktop_widget.format_tray_title(state)
+
+    assert "5小时窗口35%" in title
+    assert "周窗口57%" in title
