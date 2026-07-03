@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import importlib.util
 import json
-import os
 import sys
 from pathlib import Path
 
@@ -26,14 +25,7 @@ wham_usage = load_module()
 def test_load_auth_reads_token_and_account_id(tmp_path: Path):
     auth_file = tmp_path / "auth.json"
     auth_file.write_text(
-        json.dumps(
-            {
-                "tokens": {
-                    "access_token": "test-token",
-                    "account_id": "account-123",
-                }
-            }
-        ),
+        json.dumps({"tokens": {"access_token": "test-token", "account_id": "account-123"}}),
         encoding="utf-8",
     )
 
@@ -75,14 +67,8 @@ def test_parse_usage_windows_maps_primary_and_secondary_windows():
     windows = wham_usage.parse_usage_windows(
         {
             "rate_limit": {
-                "primary_window": {
-                    "used_percent": 58,
-                    "reset_at": 1783061876,
-                },
-                "secondary_window": {
-                    "used_percent": 42,
-                    "reset_at": 1783426601,
-                },
+                "primary_window": {"used_percent": 58, "reset_at": 1783061876},
+                "secondary_window": {"used_percent": 42, "reset_at": 1783426601},
             }
         }
     )
@@ -135,7 +121,14 @@ def test_build_report_only_contains_expected_fields():
 
 
 def test_fetch_snapshot_delegates_to_parsers(monkeypatch):
-    credits_payload = {"credits": [{"granted_at": "2026-07-01T20:03:58.215399Z", "expires_at": "2026-07-31T20:03:58.215399Z"}]}
+    credits_payload = {
+        "credits": [
+            {
+                "granted_at": "2026-07-01T20:03:58.215399Z",
+                "expires_at": "2026-07-31T20:03:58.215399Z",
+            }
+        ]
+    }
     usage_payload = {
         "rate_limit": {
             "primary_window": {"used_percent": 58, "reset_at": 1783061876},
@@ -146,49 +139,41 @@ def test_fetch_snapshot_delegates_to_parsers(monkeypatch):
     monkeypatch.setattr(wham_usage, "load_auth", lambda path: ("token", "account"))
     calls = []
 
-    def fake_request_json(url, headers, proxy_server=None):
-        calls.append((url, headers))
+    def fake_request_json(url, headers, proxy_server=None, dot_server=None):
+        calls.append((url, headers, proxy_server, dot_server))
         if url.endswith("rate-limit-reset-credits"):
             return credits_payload
         return usage_payload
 
     monkeypatch.setattr(wham_usage, "request_json", fake_request_json)
 
-    snapshot = wham_usage.fetch_snapshot("/tmp/auth.json", "http://127.0.0.1:7890")
+    snapshot = wham_usage.fetch_snapshot(
+        "/tmp/auth.json",
+        "http://127.0.0.1:7890",
+        "resolver.example",
+    )
 
     assert len(calls) == 2
+    assert calls[0][3] == "resolver.example"
     assert snapshot.credits[0].granted_at == "2026-07-02 04:03:58"
     assert snapshot.windows[0].remaining_percent == 42
 
 
 def test_resolve_proxy_prefers_cli_value(monkeypatch):
-    for key in (
-        "HTTPS_PROXY",
-        "https_proxy",
-        "HTTP_PROXY",
-        "http_proxy",
-        "ALL_PROXY",
-        "all_proxy",
-    ):
+    for key in ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy"):
         monkeypatch.delenv(key, raising=False)
     monkeypatch.setenv("HTTPS_PROXY", "http://env-proxy:7890")
 
     assert wham_usage.resolve_proxy("http://cli-proxy:7890") == "http://cli-proxy:7890"
 
 
-def test_resolve_proxy_reads_environment(monkeypatch):
-    for key in (
-        "HTTPS_PROXY",
-        "https_proxy",
-        "HTTP_PROXY",
-        "http_proxy",
-        "ALL_PROXY",
-        "all_proxy",
-    ):
-        monkeypatch.delenv(key, raising=False)
-    monkeypatch.setenv("http_proxy", "http://env-proxy:7890")
+def test_resolve_dot_server_prefers_settings_then_environment(monkeypatch, tmp_path: Path):
+    monkeypatch.setattr(wham_usage, "get_settings_path", lambda: tmp_path / "settings.json")
+    wham_usage.save_settings(dot_server="dot.local")
+    monkeypatch.setenv("CODEX_USAGE_DOT_SERVER", "env.local")
 
-    assert wham_usage.resolve_proxy() == "http://env-proxy:7890"
+    assert wham_usage.resolve_dot_server() == "dot.local"
+    assert wham_usage.resolve_dot_server("cli.local") == "cli.local"
 
 
 def test_build_url_opener_uses_proxy_handler(monkeypatch):
@@ -205,3 +190,19 @@ def test_build_url_opener_uses_proxy_handler(monkeypatch):
     assert opener is not None
     assert captured["handler"].proxies["http"] == "http://127.0.0.1:7890"
     assert captured["handler"].proxies["https"] == "http://127.0.0.1:7890"
+
+
+def test_parse_host_port_uses_default_dot_port():
+    assert wham_usage.parse_host_port("664241.alidns.com", 853) == ("664241.alidns.com", 853)
+    assert wham_usage.parse_host_port("664241.alidns.com:8853", 853) == ("664241.alidns.com", 8853)
+
+
+def test_save_settings_persists_proxy_and_dot(tmp_path: Path, monkeypatch):
+    settings_file = tmp_path / "settings.json"
+    monkeypatch.setattr(wham_usage, "get_settings_path", lambda: settings_file)
+
+    wham_usage.save_settings(proxy_server="http://127.0.0.1:7890", dot_server="dot.example")
+
+    payload = json.loads(settings_file.read_text(encoding="utf-8"))
+    assert payload["proxy_server"] == "http://127.0.0.1:7890"
+    assert payload["dot_server"] == "dot.example"

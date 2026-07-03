@@ -27,6 +27,12 @@ python3 wham_usage.py --auth-file /path/to/auth.json
 python3 wham_usage.py --proxy-server http://127.0.0.1:7890
 ```
 
+如果需要显式指定 DoT 服务器：
+
+```bash
+python3 wham_usage.py --dot-server your-dot-server.example
+```
+
 如果不传 `--proxy-server`，程序会自动读取当前命令行环境里的代理变量：
 
 - `HTTPS_PROXY`
@@ -61,23 +67,34 @@ python3 desktop_widget.py --no-browser
 - 自动跟随系统明暗模式的浏览器看板
 - 原生窗口里的明暗主题切换
 - 5 小时和周额度的百分比进度条
-- 可直接填写和应用的代理输入框
+- 主面板只展示状态，代理和 DoT 地址都放在“设置”二级界面
 
 ### Ubuntu
 
 1. 直接运行 `python3 desktop_widget.py`
 2. 如果有 `tkinter`，会弹原生小窗
-3. 如果没有 `tkinter`，会自动打印本地地址并打开浏览器看板
-4. 如果想只打印地址不自动开浏览器，用 `python3 desktop_widget.py --no-browser`
-5. 如果终端里已经设置了 `HTTPS_PROXY` 之类的环境变量，小插件会自动复用
+3. 点击主面板里的“打开设置”，进入网络设置二级界面
+4. 代理地址和 DoT 服务器地址都在这个二级界面填写
+5. 如果没有 `tkinter`，会自动打印本地地址并打开浏览器看板
+6. 如果想只打印地址不自动开浏览器，用 `python3 desktop_widget.py --no-browser`
+7. 如果终端里已经设置了 `HTTPS_PROXY` 之类的环境变量，小插件会自动复用
 
 ### Windows
 
 1. 确认安装的是带 `tkinter` 的 Python
 2. 双击运行 `desktop_widget.py`，或者在 PowerShell 里执行 `python desktop_widget.py`
-3. 如果某个 Python 环境没有 `tkinter`，也会自动回退到浏览器看板
-4. 如果想固定到桌面，可以创建一个指向该命令的快捷方式
-5. 如果 PowerShell 里已经设置了 `$env:HTTPS_PROXY` 或 `$env:HTTP_PROXY`，小插件会自动复用
+3. 代理和 DoT 地址都在“设置”二级界面填写
+4. 如果某个 Python 环境没有 `tkinter`，也会自动回退到浏览器看板
+5. 如果想固定到桌面，可以创建一个指向该命令的快捷方式
+6. 如果 PowerShell 里已经设置了 `$env:HTTPS_PROXY` 或 `$env:HTTP_PROXY`，小插件会自动复用
+
+## 本机配置
+
+程序会把代理地址和 DoT 服务器地址保存在本机：
+
+- `~/.codex-usage-widget.json`
+
+这个文件只保存在你自己的机器上，不会写进仓库代码或文档示例值。
 
 ## 打包
 

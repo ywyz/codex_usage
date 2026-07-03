@@ -6,16 +6,23 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import secrets
+import socket
+import ssl
+import struct
 import sys
 import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from http.client import HTTPSConnection
 from pathlib import Path
 from typing import Any
 
 
 BEIJING_OFFSET = timedelta(hours=8)
+DOT_DEFAULT_PORT = 853
 
 
 class WhamUsageError(RuntimeError):
@@ -42,6 +49,36 @@ class UsageSnapshot:
     windows: list[UsageWindow]
 
 
+def get_settings_path() -> Path:
+    return Path.home() / ".codex-usage-widget.json"
+
+
+def load_settings() -> dict[str, str]:
+    path = get_settings_path()
+    if not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def save_settings(
+    proxy_server: str | None = None,
+    dot_server: str | None = None,
+) -> None:
+    payload = load_settings()
+    if proxy_server is not None:
+        payload["proxy_server"] = proxy_server
+    if dot_server is not None:
+        payload["dot_server"] = dot_server
+    get_settings_path().write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="查询 Codex 账户的 rate-limit reset credits 与 WHAM 用量。"
@@ -53,7 +90,11 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--proxy-server",
-        help="代理地址，例如 http://127.0.0.1:7890。未传时自动读取环境变量代理。",
+        help="代理地址，例如 http://127.0.0.1:7890。未传时自动读取本机配置或环境变量代理。",
+    )
+    parser.add_argument(
+        "--dot-server",
+        help="DoT 服务器地址。未传时自动读取本机配置或环境变量。",
     )
     return parser.parse_args()
 
@@ -91,19 +132,178 @@ def resolve_proxy(proxy_server: str | None = None) -> str | None:
     if proxy_server:
         return proxy_server
 
-    proxy_keys = [
+    settings_proxy = load_settings().get("proxy_server")
+    if settings_proxy:
+        return settings_proxy
+
+    for key in (
         "HTTPS_PROXY",
         "https_proxy",
         "HTTP_PROXY",
         "http_proxy",
         "ALL_PROXY",
         "all_proxy",
-    ]
-    for key in proxy_keys:
+    ):
         value = os.environ.get(key)
         if value:
             return value
     return None
+
+
+def resolve_dot_server(dot_server: str | None = None) -> str | None:
+    if dot_server:
+        return dot_server
+
+    settings_dot = load_settings().get("dot_server")
+    if settings_dot:
+        return settings_dot
+
+    for key in ("CODEX_USAGE_DOT_SERVER", "codex_usage_dot_server"):
+        value = os.environ.get(key)
+        if value:
+            return value
+    return None
+
+
+def parse_host_port(address: str, default_port: int) -> tuple[str, int]:
+    if address.startswith("[") and "]" in address:
+        host, _, port_text = address[1:].partition("]")
+        port = default_port
+        if port_text.startswith(":"):
+            port = int(port_text[1:])
+        return host, port
+    if address.count(":") == 1 and "." in address:
+        host, port_text = address.rsplit(":", 1)
+        if port_text.isdigit():
+            return host, int(port_text)
+    return address, default_port
+
+
+def encode_dns_name(hostname: str) -> bytes:
+    labels = hostname.strip(".").split(".")
+    encoded = bytearray()
+    for label in labels:
+        label_bytes = label.encode("ascii")
+        encoded.append(len(label_bytes))
+        encoded.extend(label_bytes)
+    encoded.append(0)
+    return bytes(encoded)
+
+
+def build_dns_query(hostname: str, query_id: int | None = None) -> bytes:
+    message_id = query_id if query_id is not None else secrets.randbelow(65535)
+    header = struct.pack("!HHHHHH", message_id, 0x0100, 1, 0, 0, 0)
+    question = encode_dns_name(hostname) + struct.pack("!HH", 1, 1)
+    return header + question
+
+
+def skip_dns_name(message: bytes, offset: int) -> int:
+    while True:
+        if offset >= len(message):
+            raise WhamUsageError("DoT 响应格式不合法")
+        length = message[offset]
+        if length == 0:
+            return offset + 1
+        if length & 0xC0 == 0xC0:
+            return offset + 2
+        offset += 1 + length
+
+
+def parse_dns_response_for_a_record(message: bytes) -> str:
+    if len(message) < 12:
+        raise WhamUsageError("DoT 响应过短")
+    _, flags, qdcount, ancount, _, _ = struct.unpack("!HHHHHH", message[:12])
+    if flags & 0x000F:
+        raise WhamUsageError("DoT 返回了 DNS 错误码")
+    offset = 12
+    for _ in range(qdcount):
+        offset = skip_dns_name(message, offset)
+        offset += 4
+    for _ in range(ancount):
+        offset = skip_dns_name(message, offset)
+        if offset + 10 > len(message):
+            raise WhamUsageError("DoT 回答区格式不合法")
+        rtype, rclass, _, rdlength = struct.unpack("!HHIH", message[offset : offset + 10])
+        offset += 10
+        rdata = message[offset : offset + rdlength]
+        offset += rdlength
+        if rtype == 1 and rclass == 1 and rdlength == 4:
+            return socket.inet_ntoa(rdata)
+    raise WhamUsageError("DoT 未返回 IPv4 地址")
+
+
+def resolve_hostname_via_dot(hostname: str, dot_server: str) -> str:
+    dot_host, dot_port = parse_host_port(dot_server, DOT_DEFAULT_PORT)
+    payload = build_dns_query(hostname)
+    context = ssl.create_default_context()
+    try:
+        with socket.create_connection((dot_host, dot_port), timeout=20) as sock:
+            with context.wrap_socket(sock, server_hostname=dot_host) as tls_sock:
+                tls_sock.sendall(struct.pack("!H", len(payload)) + payload)
+                length_data = tls_sock.recv(2)
+                if len(length_data) != 2:
+                    raise WhamUsageError("DoT 响应长度头缺失")
+                response_length = struct.unpack("!H", length_data)[0]
+                response = bytearray()
+                while len(response) < response_length:
+                    chunk = tls_sock.recv(response_length - len(response))
+                    if not chunk:
+                        raise WhamUsageError("DoT 响应被提前关闭")
+                    response.extend(chunk)
+    except OSError as exc:
+        raise WhamUsageError(f"DoT 解析失败: {exc}") from exc
+
+    return parse_dns_response_for_a_record(bytes(response))
+
+
+class DnsOverTlsClient:
+    def __init__(self, dot_server: str) -> None:
+        self.dot_server = dot_server
+
+    def request_json(self, url: str, headers: dict[str, str]) -> dict[str, Any]:
+        parsed = urllib.parse.urlparse(url)
+        if parsed.scheme != "https" or not parsed.hostname:
+            raise WhamUsageError("当前只支持通过 DoT 访问 HTTPS 地址")
+        ip_address = resolve_hostname_via_dot(parsed.hostname, self.dot_server)
+        return self._request_https_by_ip(parsed, ip_address, headers)
+
+    def _request_https_by_ip(
+        self,
+        parsed: urllib.parse.ParseResult,
+        ip_address: str,
+        headers: dict[str, str],
+    ) -> dict[str, Any]:
+        port = parsed.port or 443
+        host = parsed.hostname
+        path = parsed.path or "/"
+        if parsed.query:
+            path = f"{path}?{parsed.query}"
+        context = ssl.create_default_context()
+        connection = HTTPSConnection(
+            host=ip_address,
+            port=port,
+            timeout=30,
+            context=context,
+        )
+        try:
+            sock = socket.create_connection((ip_address, port), timeout=30)
+            connection.sock = context.wrap_socket(sock, server_hostname=host)
+            request_headers = {
+                "Host": host,
+                "Accept": "application/json",
+                "User-Agent": "codex-wham-usage/1.0",
+                **headers,
+            }
+            connection.request("GET", path, headers=request_headers)
+            response = connection.getresponse()
+            body = response.read().decode("utf-8", errors="replace")
+            if response.status == 401:
+                raise WhamUsageError("401：凭证失效或没带对 Authorization header")
+            if response.status >= 400:
+                raise WhamUsageError(f"请求失败，HTTP {response.status}: {body[:300]}")
+            return json.loads(body)
+        finally:
+            connection.close()
 
 
 def build_url_opener(proxy_server: str | None = None) -> urllib.request.OpenerDirector:
@@ -125,14 +325,24 @@ def request_json(
     url: str,
     headers: dict[str, str],
     proxy_server: str | None = None,
+    dot_server: str | None = None,
 ) -> dict[str, Any]:
+    resolved_proxy = resolve_proxy(proxy_server)
+    resolved_dot = resolve_dot_server(dot_server)
+    if resolved_dot and not resolved_proxy:
+        return DnsOverTlsClient(resolved_dot).request_json(url, headers)
+
     request = urllib.request.Request(
         url,
         headers={
             "Authorization": headers["Authorization"],
             "Accept": "application/json",
             "User-Agent": "codex-wham-usage/1.0",
-            **({} if "ChatGPT-Account-Id" not in headers else {"ChatGPT-Account-Id": headers["ChatGPT-Account-Id"]}),
+            **(
+                {}
+                if "ChatGPT-Account-Id" not in headers
+                else {"ChatGPT-Account-Id": headers["ChatGPT-Account-Id"]}
+            ),
         },
     )
     opener = build_url_opener(proxy_server)
@@ -173,12 +383,8 @@ def parse_usage_windows(payload: dict[str, Any]) -> list[UsageWindow]:
     if not isinstance(rate_limit, dict):
         raise WhamUsageError("usage 响应缺少 rate_limit")
 
-    window_specs = [
-        ("5小时窗口", "primary_window"),
-        ("周窗口", "secondary_window"),
-    ]
     windows: list[UsageWindow] = []
-    for label, key in window_specs:
+    for label, key in (("5小时窗口", "primary_window"), ("周窗口", "secondary_window")):
         raw = rate_limit.get(key)
         if not isinstance(raw, dict):
             raise WhamUsageError(f"usage 响应缺少 {key}")
@@ -186,24 +392,28 @@ def parse_usage_windows(payload: dict[str, Any]) -> list[UsageWindow]:
         reset_at = raw.get("reset_at")
         if not isinstance(reset_at, (int, float)):
             raise WhamUsageError(f"usage 响应里的 {key}.reset_at 缺失或格式不对")
-        remaining_percent = max(0, 100 - used_percent)
         windows.append(
             UsageWindow(
                 name=label,
                 used_percent=used_percent,
-                remaining_percent=remaining_percent,
+                remaining_percent=max(0, 100 - used_percent),
                 reset_at=utc_to_beijing_text(reset_at),
             )
-            )
+        )
     return windows
 
 
-def fetch_snapshot(auth_file: str, proxy_server: str | None = None) -> UsageSnapshot:
+def fetch_snapshot(
+    auth_file: str,
+    proxy_server: str | None = None,
+    dot_server: str | None = None,
+) -> UsageSnapshot:
     access_token, account_id = load_auth(auth_file)
     credits_payload = request_json(
         "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits",
         headers={"Authorization": f"Bearer {access_token}"},
         proxy_server=proxy_server,
+        dot_server=dot_server,
     )
     usage_payload = request_json(
         "https://chatgpt.com/backend-api/wham/usage",
@@ -212,6 +422,7 @@ def fetch_snapshot(auth_file: str, proxy_server: str | None = None) -> UsageSnap
             "ChatGPT-Account-Id": account_id,
         },
         proxy_server=proxy_server,
+        dot_server=dot_server,
     )
     return UsageSnapshot(
         credits=parse_credits(credits_payload),
@@ -232,9 +443,7 @@ def build_report(credits: list[CreditWindow], windows: list[UsageWindow]) -> str
     lines.append("")
     lines.append("用量窗口：")
     for window in windows:
-        lines.append(
-            f"{window.name}余额：{window.remaining_percent}%（已用 {window.used_percent}%）"
-        )
+        lines.append(f"{window.name}余额：{window.remaining_percent}%（已用 {window.used_percent}%）")
         lines.append(f"{window.name}重置时间：{window.reset_at}")
 
     return "\n".join(lines)
@@ -243,9 +452,8 @@ def build_report(credits: list[CreditWindow], windows: list[UsageWindow]) -> str
 def main() -> int:
     args = parse_args()
     try:
-        snapshot = fetch_snapshot(args.auth_file, args.proxy_server)
-        report = build_report(snapshot.credits, snapshot.windows)
-        print(report)
+        snapshot = fetch_snapshot(args.auth_file, args.proxy_server, args.dot_server)
+        print(build_report(snapshot.credits, snapshot.windows))
         return 0
     except WhamUsageError as exc:
         print(str(exc), file=sys.stderr)

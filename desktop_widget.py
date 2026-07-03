@@ -14,7 +14,14 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 from urllib.parse import parse_qs, urlparse
 
-from wham_usage import UsageSnapshot, WhamUsageError, fetch_snapshot
+from wham_usage import (
+    UsageSnapshot,
+    WhamUsageError,
+    fetch_snapshot,
+    resolve_dot_server,
+    resolve_proxy,
+    save_settings,
+)
 
 if TYPE_CHECKING:
     import tkinter as tk
@@ -48,6 +55,7 @@ class WidgetState:
     credits: list[CreditDisplay]
     windows: list[WindowDisplay]
     proxy_server: str
+    dot_server: str
     status_text: str
     status_color: str
     error_message: str | None
@@ -70,7 +78,11 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--proxy-server",
-        help="代理地址，例如 http://127.0.0.1:7890。未传时自动读取环境变量代理。",
+        help="代理地址，例如 http://127.0.0.1:7890。未传时自动读取本机配置或环境变量代理。",
+    )
+    parser.add_argument(
+        "--dot-server",
+        help="DoT 服务器地址。未传时自动读取本机配置或环境变量。",
     )
     parser.add_argument(
         "--no-browser",
@@ -91,6 +103,7 @@ def build_widget_state(
     error_message: str | None,
     fetched_at: datetime | None,
     proxy_server: str | None = None,
+    dot_server: str | None = None,
 ) -> WidgetState:
     if error_message:
         return WidgetState(
@@ -99,6 +112,7 @@ def build_widget_state(
             credits=[],
             windows=[],
             proxy_server=proxy_server or "",
+            dot_server=dot_server or "",
             status_text=error_message,
             status_color="#ff7b72",
             error_message=error_message,
@@ -106,11 +120,7 @@ def build_widget_state(
 
     assert snapshot is not None
     credits = [
-        CreditDisplay(
-            index=index,
-            granted_at=credit.granted_at,
-            expires_at=credit.expires_at,
-        )
+        CreditDisplay(index=index, granted_at=credit.granted_at, expires_at=credit.expires_at)
         for index, credit in enumerate(snapshot.credits, start=1)
     ]
     windows = [
@@ -129,6 +139,7 @@ def build_widget_state(
         credits=credits,
         windows=windows,
         proxy_server=proxy_server or "",
+        dot_server=dot_server or "",
         status_text=f"最近刷新：{stamp}",
         status_color="#4ade80",
         error_message=None,
@@ -150,6 +161,7 @@ class CodexUsageWidget:
         auth_file: str,
         refresh_seconds: int,
         proxy_server: str | None,
+        dot_server: str | None,
     ) -> None:
         tk, ttk = load_tk_modules()
         if tk is None or ttk is None:
@@ -159,25 +171,29 @@ class CodexUsageWidget:
         self._ttk = ttk
         self.auth_file = auth_file
         self.refresh_seconds = validate_refresh_seconds(refresh_seconds)
-        self.proxy_server = proxy_server or ""
+        self.proxy_server = proxy_server or resolve_proxy() or ""
+        self.dot_server = dot_server or resolve_dot_server() or ""
+        self._theme = "dark"
+        self.settings_window = None
+
         self.root = tk.Tk()
         self.root.title("Codex 用量看板")
         self.root.geometry("560x680")
         self.root.minsize(520, 620)
-        self._theme = "dark"
 
         self.title_var = tk.StringVar(value="Codex 用量看板")
         self.subtitle_var = tk.StringVar(value="准备加载...")
         self.status_var = tk.StringVar(value="正在初始化")
         self.proxy_var = tk.StringVar(value=self.proxy_server)
+        self.dot_var = tk.StringVar(value=self.dot_server)
 
         self.status_label: ttk.Label
-        self.proxy_entry: ttk.Entry
         self.credit_frame: ttk.Frame
         self.window_frame: ttk.Frame
-        self.window_progressbars: list[tuple[WindowDisplay, ttk.Progressbar, ttk.Label]] = []
         self._refresh_job: str | None = None
+        self._last_state: WidgetState | None = None
         self._build_ui()
+
 
     def _apply_theme(self) -> None:
         ttk = self._ttk
@@ -221,60 +237,22 @@ class CodexUsageWidget:
         style.configure("Shell.TFrame", background=palette["bg"])
         style.configure("Card.TFrame", background=palette["card"])
         style.configure("CardAlt.TFrame", background=palette["card_alt"])
-        style.configure(
-            "Title.TLabel",
-            background=palette["bg"],
-            foreground=palette["text"],
-        )
-        style.configure(
-            "Subtitle.TLabel",
-            background=palette["bg"],
-            foreground=palette["muted"],
-        )
-        style.configure(
-            "CardTitle.TLabel",
-            background=palette["card"],
-            foreground=palette["accent"],
-        )
-        style.configure(
-            "Body.TLabel",
-            background=palette["card"],
-            foreground=palette["text"],
-        )
-        style.configure(
-            "Muted.TLabel",
-            background=palette["card"],
-            foreground=palette["muted"],
-        )
-        style.configure(
-            "Status.TLabel",
-            background=palette["bg"],
-            foreground=palette["good"],
-        )
-        style.configure(
-            "Accent.TButton",
-            background=palette["accent"],
-            foreground="#ffffff",
-            borderwidth=0,
-            focusthickness=3,
-            focuscolor=palette["accent"],
-        )
-        style.map(
-            "Accent.TButton",
-            background=[("active", palette["bar"])],
-        )
-        style.configure(
-            "Toggle.TButton",
-            background=palette["card"],
-            foreground=palette["text"],
-            bordercolor=palette["line"],
-        )
+        style.configure("Title.TLabel", background=palette["bg"], foreground=palette["text"])
+        style.configure("Subtitle.TLabel", background=palette["bg"], foreground=palette["muted"])
+        style.configure("CardTitle.TLabel", background=palette["card"], foreground=palette["accent"])
+        style.configure("Body.TLabel", background=palette["card"], foreground=palette["text"])
+        style.configure("AltBody.TLabel", background=palette["card_alt"], foreground=palette["text"])
+        style.configure("Muted.TLabel", background=palette["card"], foreground=palette["muted"])
+        style.configure("AltMuted.TLabel", background=palette["card_alt"], foreground=palette["muted"])
+        style.configure("Status.TLabel", background=palette["bg"], foreground=palette["good"])
+        style.configure("Accent.TButton", background=palette["accent"], foreground="#ffffff")
+        style.map("Accent.TButton", background=[("active", palette["bar"])])
+        style.configure("Toggle.TButton", background=palette["card"], foreground=palette["text"])
         style.configure(
             "Proxy.TEntry",
             fieldbackground=palette["entry"],
             foreground=palette["text"],
             insertcolor=palette["text"],
-            bordercolor=palette["line"],
         )
         style.configure(
             "Usage.Horizontal.TProgressbar",
@@ -284,11 +262,12 @@ class CodexUsageWidget:
             lightcolor=palette["bar"],
             darkcolor=palette["bar"],
         )
+        if self.settings_window is not None:
+            self.settings_window.configure(bg=palette["bg"])
 
     def _build_ui(self) -> None:
         ttk = self._ttk
         self._apply_theme()
-
         shell = ttk.Frame(self.root, padding=18, style="Shell.TFrame")
         shell.pack(fill="both", expand=True)
 
@@ -317,40 +296,37 @@ class CodexUsageWidget:
         ).pack(side="left")
         ttk.Button(
             top_actions,
+            text="打开设置",
+            command=self.open_settings_window,
+            style="Toggle.TButton",
+        ).pack(side="left", padx=(10, 0))
+        ttk.Button(
+            top_actions,
             text="立即刷新",
             command=self.refresh_now,
             style="Accent.TButton",
         ).pack(side="right")
 
-        proxy_card = ttk.Frame(shell, padding=16, style="Card.TFrame")
-        proxy_card.pack(fill="x", pady=(0, 14))
+        settings_card = ttk.Frame(shell, padding=16, style="Card.TFrame")
+        settings_card.pack(fill="x", pady=(0, 14))
         ttk.Label(
-            proxy_card,
-            text="代理设置",
+            settings_card,
+            text="网络设置",
             font=("Segoe UI", 12, "bold"),
             style="CardTitle.TLabel",
         ).pack(anchor="w")
         ttk.Label(
-            proxy_card,
-            text="支持 http://127.0.0.1:7890，留空则继续使用命令行环境变量代理。",
+            settings_card,
+            text="代理地址和 DoT 服务器地址都放在二级设置界面里填写，主面板不直接展示。",
             font=("Segoe UI", 9),
             style="Muted.TLabel",
         ).pack(anchor="w", pady=(4, 10))
-        entry_row = ttk.Frame(proxy_card, style="Card.TFrame")
-        entry_row.pack(fill="x")
-        self.proxy_entry = ttk.Entry(
-            entry_row,
-            textvariable=self.proxy_var,
-            style="Proxy.TEntry",
-            font=("Consolas", 11),
-        )
-        self.proxy_entry.pack(side="left", fill="x", expand=True)
         ttk.Button(
-            entry_row,
-            text="应用代理",
-            command=self.apply_proxy_and_refresh,
+            settings_card,
+            text="进入设置",
+            command=self.open_settings_window,
             style="Accent.TButton",
-        ).pack(side="left", padx=(10, 0))
+        ).pack(anchor="w")
 
         usage_card = ttk.Frame(shell, padding=16, style="Card.TFrame")
         usage_card.pack(fill="x", pady=(0, 14))
@@ -383,31 +359,79 @@ class CodexUsageWidget:
             style="Status.TLabel",
         )
         self.status_label.pack(side="left")
-        ttk.Button(
-            footer,
-            text="退出",
-            command=self.root.destroy,
-            style="Toggle.TButton",
-        ).pack(side="right")
+        ttk.Button(footer, text="退出", command=self.root.destroy, style="Toggle.TButton").pack(
+            side="right"
+        )
 
     def toggle_theme(self) -> None:
         self._theme = "light" if self._theme == "dark" else "dark"
         self._apply_theme()
-        self._repaint_cards()
+        if self._last_state is not None:
+            self._apply_state(self._last_state)
 
-    def apply_proxy_and_refresh(self) -> None:
+    def open_settings_window(self) -> None:
+        if self.settings_window is not None:
+            self.settings_window.lift()
+            return
+        ttk = self._ttk
+        window = self._tk.Toplevel(self.root)
+        window.title("网络设置")
+        window.geometry("520x240")
+        window.resizable(False, False)
+        window.configure(bg=self.palette["bg"])
+        self.settings_window = window
+
+        frame = ttk.Frame(window, padding=18, style="Shell.TFrame")
+        frame.pack(fill="both", expand=True)
+        ttk.Label(frame, text="代理地址", font=("Segoe UI", 11, "bold"), style="CardTitle.TLabel").pack(
+            anchor="w"
+        )
+        ttk.Entry(frame, textvariable=self.proxy_var, style="Proxy.TEntry", font=("Consolas", 10)).pack(
+            fill="x", pady=(6, 12)
+        )
+        ttk.Label(frame, text="DoT 服务器地址", font=("Segoe UI", 11, "bold"), style="CardTitle.TLabel").pack(
+            anchor="w"
+        )
+        ttk.Entry(frame, textvariable=self.dot_var, style="Proxy.TEntry", font=("Consolas", 10)).pack(
+            fill="x", pady=(6, 8)
+        )
+        ttk.Label(
+            frame,
+            text="这里填写你的 DoT 服务器主机名。不会写进代码或文档，只保存在本机配置里。",
+            font=("Segoe UI", 9),
+            style="Muted.TLabel",
+        ).pack(anchor="w")
+        button_row = ttk.Frame(frame, style="Shell.TFrame")
+        button_row.pack(fill="x", pady=(18, 0))
+        ttk.Button(
+            button_row,
+            text="保存并刷新",
+            command=self.apply_network_settings,
+            style="Accent.TButton",
+        ).pack(side="left")
+        ttk.Button(
+            button_row,
+            text="取消",
+            command=self.close_settings_window,
+            style="Toggle.TButton",
+        ).pack(side="right")
+        window.protocol("WM_DELETE_WINDOW", self.close_settings_window)
+
+    def close_settings_window(self) -> None:
+        if self.settings_window is not None:
+            self.settings_window.destroy()
+            self.settings_window = None
+
+    def apply_network_settings(self) -> None:
         self.proxy_server = self.proxy_var.get().strip()
+        self.dot_server = self.dot_var.get().strip()
+        save_settings(proxy_server=self.proxy_server, dot_server=self.dot_server)
+        self.close_settings_window()
         self.refresh_now()
 
     def _clear_frame(self, frame) -> None:
         for child in frame.winfo_children():
             child.destroy()
-
-    def _repaint_cards(self) -> None:
-        # Force existing dynamic sections to pick up the new palette.
-        current_state = getattr(self, "_last_state", None)
-        if current_state is not None:
-            self._apply_state(current_state)
 
     def refresh_now(self) -> None:
         self.status_var.set("正在刷新...")
@@ -416,11 +440,26 @@ class CodexUsageWidget:
 
     def _refresh_worker(self) -> None:
         try:
-            snapshot = fetch_snapshot(self.auth_file, self.proxy_server or None)
-            fetched_at = datetime.now()
-            state = build_widget_state(snapshot, None, fetched_at, self.proxy_server)
+            snapshot = fetch_snapshot(
+                self.auth_file,
+                self.proxy_server or None,
+                self.dot_server or None,
+            )
+            state = build_widget_state(
+                snapshot,
+                None,
+                datetime.now(),
+                self.proxy_server,
+                self.dot_server,
+            )
         except WhamUsageError as exc:
-            state = build_widget_state(None, str(exc), None, self.proxy_server)
+            state = build_widget_state(
+                None,
+                str(exc),
+                None,
+                self.proxy_server,
+                self.dot_server,
+            )
         self.root.after(0, lambda: self._apply_state(state))
 
     def _render_windows(self, state: WidgetState) -> None:
@@ -439,17 +478,14 @@ class CodexUsageWidget:
             card.pack(fill="x", pady=(0, 10))
             top = ttk.Frame(card, style="CardAlt.TFrame")
             top.pack(fill="x")
-            ttk.Label(
-                top,
-                text=window.name,
-                font=("Segoe UI", 11, "bold"),
-                style="Body.TLabel",
-            ).pack(side="left")
+            ttk.Label(top, text=window.name, font=("Segoe UI", 11, "bold"), style="AltBody.TLabel").pack(
+                side="left"
+            )
             ttk.Label(
                 top,
                 text=f"余量 {window.remaining_percent}%",
                 font=("Segoe UI", 11, "bold"),
-                style="Body.TLabel",
+                style="AltBody.TLabel",
             ).pack(side="right")
             bar = ttk.Progressbar(
                 card,
@@ -462,7 +498,7 @@ class CodexUsageWidget:
                 card,
                 text=f"已用 {window.used_percent}%  |  重置时间 {window.reset_at}",
                 font=("Segoe UI", 9),
-                style="Muted.TLabel",
+                style="AltMuted.TLabel",
             ).pack(anchor="w")
 
     def _render_credits(self, state: WidgetState) -> None:
@@ -477,7 +513,7 @@ class CodexUsageWidget:
             ).pack(anchor="w")
             ttk.Label(
                 self.credit_frame,
-                text="请检查本机 Codex 凭证、代理或网络连接",
+                text="请检查本机 Codex 凭证、代理、DoT 或网络连接",
                 font=("Segoe UI", 9),
                 style="Muted.TLabel",
             ).pack(anchor="w", pady=(6, 0))
@@ -497,26 +533,25 @@ class CodexUsageWidget:
                 card,
                 text=f"第 {credit.index} 张重置卡",
                 font=("Segoe UI", 11, "bold"),
-                style="Body.TLabel",
+                style="AltBody.TLabel",
             ).pack(anchor="w")
             ttk.Label(
                 card,
                 text=f"发放时间：{credit.granted_at}",
                 font=("Consolas", 10),
-                style="Muted.TLabel",
+                style="AltMuted.TLabel",
             ).pack(anchor="w", pady=(6, 2))
             ttk.Label(
                 card,
                 text=f"过期时间：{credit.expires_at}",
                 font=("Consolas", 10),
-                style="Muted.TLabel",
+                style="AltMuted.TLabel",
             ).pack(anchor="w")
 
     def _apply_state(self, state: WidgetState) -> None:
         self._last_state = state
         self.title_var.set(state.title)
         self.subtitle_var.set(state.subtitle)
-        self.proxy_var.set(state.proxy_server)
         self.status_var.set(state.status_text)
         self.status_label.configure(foreground=state.status_color)
         self._render_windows(state)
@@ -584,7 +619,6 @@ def render_browser_html(state: WidgetState, refresh_seconds: int) -> str:
       --bad: #b91c1c;
       --track: #e2e8f0;
       --fill: linear-gradient(90deg, #16a34a, #4ade80);
-      --input: #ffffff;
       --shadow: 0 20px 60px rgba(73, 45, 5, 0.14);
     }}
     @media (prefers-color-scheme: dark) {{
@@ -600,7 +634,6 @@ def render_browser_html(state: WidgetState, refresh_seconds: int) -> str:
         --bad: #f87171;
         --track: #1f2937;
         --fill: linear-gradient(90deg, #22c55e, #86efac);
-        --input: #0b1220;
         --shadow: 0 20px 60px rgba(0, 0, 0, 0.35);
       }}
     }}
@@ -623,7 +656,6 @@ def render_browser_html(state: WidgetState, refresh_seconds: int) -> str:
       border-radius: 24px;
       box-shadow: var(--shadow);
       padding: 28px;
-      backdrop-filter: blur(14px);
     }}
     .header {{
       display: flex;
@@ -632,28 +664,10 @@ def render_browser_html(state: WidgetState, refresh_seconds: int) -> str:
       align-items: flex-start;
       flex-wrap: wrap;
     }}
-    h1 {{
-      margin: 0;
-      font-size: 32px;
-      color: var(--accent);
-    }}
-    .subtitle {{
-      margin-top: 8px;
-      color: var(--muted);
-      font-size: 15px;
-    }}
-    .status {{
-      margin-top: 12px;
-      color: {html.escape(state.status_color)};
-      font-size: 14px;
-      font-weight: 700;
-    }}
-    .toolbar {{
-      display: flex;
-      gap: 10px;
-      align-items: center;
-      flex-wrap: wrap;
-    }}
+    h1 {{ margin: 0; font-size: 32px; color: var(--accent); }}
+    .subtitle {{ margin-top: 8px; color: var(--muted); font-size: 15px; }}
+    .status {{ margin-top: 12px; color: {html.escape(state.status_color)}; font-size: 14px; font-weight: 700; }}
+    .toolbar {{ display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }}
     .button {{
       display: inline-block;
       padding: 10px 14px;
@@ -664,6 +678,11 @@ def render_browser_html(state: WidgetState, refresh_seconds: int) -> str:
       font-weight: 700;
       border: none;
       cursor: pointer;
+    }}
+    .button.ghost {{
+      background: transparent;
+      color: var(--accent);
+      border: 1px solid var(--line);
     }}
     .grid {{
       display: grid;
@@ -677,11 +696,7 @@ def render_browser_html(state: WidgetState, refresh_seconds: int) -> str:
       border-radius: 18px;
       padding: 18px;
     }}
-    h2 {{
-      margin: 0 0 14px 0;
-      font-size: 18px;
-      color: var(--accent);
-    }}
+    h2 {{ margin: 0 0 14px 0; font-size: 18px; color: var(--accent); }}
     .usage-card, .credit-card {{
       padding: 14px;
       border-radius: 14px;
@@ -689,74 +704,17 @@ def render_browser_html(state: WidgetState, refresh_seconds: int) -> str:
       border: 1px solid var(--line);
       margin-bottom: 12px;
     }}
-    .usage-card:last-child, .credit-card:last-child {{
-      margin-bottom: 0;
-    }}
     .usage-head {{
       display: flex;
       justify-content: space-between;
       align-items: center;
       gap: 12px;
     }}
-    h3 {{
-      margin: 0;
-      font-size: 16px;
-    }}
-    .usage-head span {{
-      font-weight: 800;
-      color: var(--good);
-    }}
-    .progress {{
-      height: 14px;
-      border-radius: 999px;
-      background: var(--track);
-      overflow: hidden;
-      margin: 12px 0 10px;
-    }}
-    .progress-fill {{
-      height: 100%;
-      border-radius: 999px;
-      background: var(--fill);
-    }}
-    p {{
-      margin: 6px 0 0;
-      color: var(--muted);
-      font-size: 14px;
-    }}
-    .proxy-form {{
-      display: flex;
-      gap: 10px;
-      align-items: center;
-      flex-wrap: wrap;
-      margin-top: 18px;
-      padding: 16px;
-      border-radius: 18px;
-      background: var(--card-alt);
-      border: 1px solid var(--line);
-    }}
-    .proxy-form label {{
-      font-weight: 700;
-      min-width: 72px;
-    }}
-    .proxy-form input {{
-      flex: 1;
-      min-width: 260px;
-      padding: 11px 14px;
-      border-radius: 12px;
-      border: 1px solid var(--line);
-      background: var(--input);
-      color: var(--ink);
-      font-size: 14px;
-    }}
-    .helper {{
-      width: 100%;
-      color: var(--muted);
-      font-size: 13px;
-    }}
-    .empty {{
-      color: var(--muted);
-      margin: 0;
-    }}
+    h3 {{ margin: 0; font-size: 16px; }}
+    .usage-head span {{ font-weight: 800; color: var(--good); }}
+    .progress {{ height: 14px; border-radius: 999px; background: var(--track); overflow: hidden; margin: 12px 0 10px; }}
+    .progress-fill {{ height: 100%; border-radius: 999px; background: var(--fill); }}
+    p {{ margin: 6px 0 0; color: var(--muted); font-size: 14px; }}
     .error {{
       margin-top: 14px;
       padding: 12px 14px;
@@ -765,6 +723,7 @@ def render_browser_html(state: WidgetState, refresh_seconds: int) -> str:
       color: var(--bad);
       font-weight: 700;
     }}
+    .empty {{ color: var(--muted); margin: 0; }}
   </style>
 </head>
 <body>
@@ -778,14 +737,9 @@ def render_browser_html(state: WidgetState, refresh_seconds: int) -> str:
       </div>
       <div class="toolbar">
         <a class="button" href="/">立即刷新</a>
+        <a class="button ghost" href="/settings">网络设置</a>
       </div>
     </div>
-    <form class="proxy-form" method="get" action="/">
-      <label for="proxy">代理</label>
-      <input id="proxy" name="proxy" value="{html.escape(state.proxy_server)}" placeholder="http://127.0.0.1:7890">
-      <button class="button" type="submit">应用代理</button>
-      <div class="helper">这里填写代理地址。留空则继续使用命令行环境变量里的代理。</div>
-    </form>
     <section class="grid">
       <article class="card">
         <h2>用量窗口</h2>
@@ -802,40 +756,127 @@ def render_browser_html(state: WidgetState, refresh_seconds: int) -> str:
 """
 
 
+def render_browser_settings_html(state: WidgetState) -> str:
+    return f"""<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>网络设置</title>
+  <style>
+    body {{
+      margin: 0;
+      font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+      background: #0f172a;
+      color: #e5eefc;
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      padding: 24px;
+      box-sizing: border-box;
+    }}
+    .panel {{
+      width: min(720px, 100%);
+      background: #111827;
+      border: 1px solid #334155;
+      border-radius: 20px;
+      padding: 24px;
+    }}
+    h1 {{ margin: 0 0 18px; color: #f59e0b; }}
+    label {{ display: block; margin: 14px 0 8px; font-weight: 700; }}
+    input {{
+      width: 100%;
+      box-sizing: border-box;
+      padding: 12px 14px;
+      border-radius: 12px;
+      border: 1px solid #334155;
+      background: #0b1220;
+      color: #e5eefc;
+    }}
+    .helper {{ margin-top: 8px; color: #9fb0ca; font-size: 13px; }}
+    .row {{ display: flex; gap: 10px; margin-top: 20px; flex-wrap: wrap; }}
+    .button {{
+      display: inline-block;
+      padding: 10px 14px;
+      border-radius: 999px;
+      background: #f59e0b;
+      color: #fff;
+      text-decoration: none;
+      border: none;
+      cursor: pointer;
+      font-weight: 700;
+    }}
+    .ghost {{ background: transparent; color: #f59e0b; border: 1px solid #334155; }}
+  </style>
+</head>
+<body>
+  <main class="panel">
+    <h1>网络设置</h1>
+    <form method="get" action="/settings">
+      <label for="proxy">代理地址</label>
+      <input id="proxy" name="proxy" value="{html.escape(state.proxy_server)}" placeholder="http://127.0.0.1:7890">
+      <div class="helper">留空则继续使用命令行环境变量里的代理。</div>
+      <label for="dot">DoT 服务器地址</label>
+      <input id="dot" name="dot" value="{html.escape(state.dot_server)}" placeholder="填写你的 DoT 服务器主机名">
+      <div class="helper">这里填写 DoT 地址。不会写进代码或文档，只保存在本机配置文件里。</div>
+      <div class="row">
+        <button class="button" type="submit">保存设置</button>
+        <a class="button ghost" href="/">返回主面板</a>
+      </div>
+    </form>
+  </main>
+</body>
+</html>
+"""
+
+
 class BrowserDashboard:
     def __init__(
         self,
         auth_file: str,
         refresh_seconds: int,
         proxy_server: str | None,
+        dot_server: str | None,
         no_browser: bool,
     ) -> None:
         self.auth_file = auth_file
         self.refresh_seconds = validate_refresh_seconds(refresh_seconds)
-        self.proxy_server = proxy_server or ""
+        self.proxy_server = proxy_server or resolve_proxy() or ""
+        self.dot_server = dot_server or resolve_dot_server() or ""
         self.no_browser = no_browser
+        self.url: str | None = None
 
     def _make_handler(self):
         dashboard = self
 
         class DashboardHandler(BaseHTTPRequestHandler):
             def do_GET(self) -> None:
-                if urlparse(self.path).path not in {"/", "/index.html"}:
+                parsed = urlparse(self.path)
+                if parsed.path not in {"/", "/index.html", "/settings"}:
                     self.send_error(404)
                     return
-                params = parse_qs(urlparse(self.path).query)
+                params = parse_qs(parsed.query)
                 if "proxy" in params:
                     dashboard.proxy_server = params.get("proxy", [""])[0].strip()
+                if "dot" in params:
+                    dashboard.dot_server = params.get("dot", [""])[0].strip()
+                if "proxy" in params or "dot" in params:
+                    save_settings(
+                        proxy_server=dashboard.proxy_server,
+                        dot_server=dashboard.dot_server,
+                    )
                 try:
                     snapshot = fetch_snapshot(
                         dashboard.auth_file,
                         dashboard.proxy_server or None,
+                        dashboard.dot_server or None,
                     )
                     state = build_widget_state(
                         snapshot,
                         None,
                         datetime.now(),
                         dashboard.proxy_server,
+                        dashboard.dot_server,
                     )
                 except WhamUsageError as exc:
                     state = build_widget_state(
@@ -843,8 +884,14 @@ class BrowserDashboard:
                         str(exc),
                         None,
                         dashboard.proxy_server,
+                        dashboard.dot_server,
                     )
-                body = render_browser_html(state, dashboard.refresh_seconds).encode("utf-8")
+                html_text = (
+                    render_browser_settings_html(state)
+                    if parsed.path == "/settings"
+                    else render_browser_html(state, dashboard.refresh_seconds)
+                )
+                body = html_text.encode("utf-8")
                 self.send_response(200)
                 self.send_header("Content-Type", "text/html; charset=utf-8")
                 self.send_header("Cache-Control", "no-store")
@@ -859,10 +906,10 @@ class BrowserDashboard:
 
     def run(self) -> None:
         server = ThreadingHTTPServer(("127.0.0.1", 0), self._make_handler())
-        url = f"http://127.0.0.1:{server.server_port}/"
-        print(f"tkinter 不可用，已切换到浏览器看板模式：{url}")
+        self.url = f"http://127.0.0.1:{server.server_port}/"
+        print(f"tkinter 不可用，已切换到浏览器看板模式：{self.url}")
         if not self.no_browser:
-            webbrowser.open(url, new=1)
+            webbrowser.open(self.url, new=1)
         try:
             server.serve_forever()
         except KeyboardInterrupt:
@@ -879,6 +926,7 @@ def main() -> int:
             auth_file=args.auth_file,
             refresh_seconds=refresh_seconds,
             proxy_server=args.proxy_server,
+            dot_server=args.dot_server,
         )
         widget.run()
     except ModuleNotFoundError as exc:
@@ -888,6 +936,7 @@ def main() -> int:
             auth_file=args.auth_file,
             refresh_seconds=refresh_seconds,
             proxy_server=args.proxy_server,
+            dot_server=args.dot_server,
             no_browser=args.no_browser,
         )
         dashboard.run()

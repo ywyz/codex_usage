@@ -58,3 +58,9 @@ def test_proxy_resolution_contract_prefers_cli_then_environment(monkeypatch):
 
     assert wham_usage.resolve_proxy("http://cli-proxy:7890") == "http://cli-proxy:7890"
     assert wham_usage.resolve_proxy() == "http://env-proxy:7890"
+
+
+def test_dot_resolution_contract_prefers_cli_then_settings():
+    wham_usage = load_module()
+
+    assert wham_usage.resolve_dot_server("resolver.example") == "resolver.example"

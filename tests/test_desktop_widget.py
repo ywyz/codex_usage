@@ -60,11 +60,13 @@ def test_build_widget_state_for_success_snapshot():
         error_message=None,
         fetched_at=datetime(2026, 7, 3, 10, 0, 0),
         proxy_server="http://127.0.0.1:7890",
+        dot_server="664241.alidns.com",
     )
 
     assert state.credits[0].index == 1
     assert state.windows[0].remaining_percent == 37
     assert state.proxy_server == "http://127.0.0.1:7890"
+    assert state.dot_server == "664241.alidns.com"
     assert state.status_text == "最近刷新：2026-07-03 10:00:00"
 
 
@@ -80,16 +82,23 @@ def test_build_widget_state_for_error():
     assert state.error_message == "401：凭证失效或没带对 Authorization header"
 
 
-def test_parse_args_accepts_proxy_server(monkeypatch):
+def test_parse_args_accepts_proxy_and_dot(monkeypatch):
     monkeypatch.setattr(
         sys,
         "argv",
-        ["desktop_widget.py", "--proxy-server", "http://127.0.0.1:7890"],
+        [
+            "desktop_widget.py",
+            "--proxy-server",
+            "http://127.0.0.1:7890",
+            "--dot-server",
+            "664241.alidns.com",
+        ],
     )
 
     args = desktop_widget.parse_args()
 
     assert args.proxy_server == "http://127.0.0.1:7890"
+    assert args.dot_server == "664241.alidns.com"
 
 
 def test_load_tk_modules_returns_none_when_tkinter_missing(monkeypatch):
@@ -108,7 +117,7 @@ def test_load_tk_modules_returns_none_when_tkinter_missing(monkeypatch):
     assert ttk_module is None
 
 
-def test_render_browser_html_contains_auto_refresh():
+def test_render_browser_html_contains_settings_link():
     state = desktop_widget.WidgetState(
         title="Codex 用量看板",
         subtitle="重置卡、5 小时余量、周余量",
@@ -128,6 +137,7 @@ def test_render_browser_html_contains_auto_refresh():
             )
         ],
         proxy_server="http://127.0.0.1:7890",
+        dot_server="664241.alidns.com",
         status_text="最近刷新：2026-07-03 12:00:00",
         status_color="#027a48",
         error_message=None,
@@ -138,5 +148,24 @@ def test_render_browser_html_contains_auto_refresh():
     assert 'http-equiv="refresh" content="300"' in html_text
     assert "prefers-color-scheme: dark" in html_text
     assert "width:35%" in html_text
-    assert 'value="http://127.0.0.1:7890"' in html_text
-    assert "立即刷新" in html_text
+    assert 'href="/settings"' in html_text
+
+
+def test_render_browser_settings_html_contains_dot_field():
+    state = desktop_widget.WidgetState(
+        title="Codex 用量看板",
+        subtitle="",
+        credits=[],
+        windows=[],
+        proxy_server="http://127.0.0.1:7890",
+        dot_server="664241.alidns.com",
+        status_text="ok",
+        status_color="#4ade80",
+        error_message=None,
+    )
+
+    html_text = desktop_widget.render_browser_settings_html(state)
+
+    assert 'name="proxy"' in html_text
+    assert 'name="dot"' in html_text
+    assert 'value="664241.alidns.com"' in html_text

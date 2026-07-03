@@ -47,12 +47,14 @@ def test_widget_state_contract_covers_required_desktop_fields():
         error_message=None,
         fetched_at=datetime(2026, 7, 3, 10, 0, 0),
         proxy_server="http://127.0.0.1:7890",
+        dot_server="664241.alidns.com",
     )
 
     assert state.title == "Codex 用量看板"
     assert state.credits[0].granted_at == "2026-07-02 04:03:58"
     assert state.windows[0].remaining_percent == 37
     assert state.windows[1].remaining_percent == 57
+    assert state.dot_server == "664241.alidns.com"
     assert state.status_text == "最近刷新：2026-07-03 10:00:00"
 
 
@@ -84,6 +86,7 @@ def test_browser_fallback_contract_renders_dashboard_html():
             ),
         ],
         proxy_server="http://127.0.0.1:7890",
+        dot_server="664241.alidns.com",
         status_text="最近刷新：2026-07-03 12:00:00",
         status_color="#027a48",
         error_message=None,
@@ -94,5 +97,26 @@ def test_browser_fallback_contract_renders_dashboard_html():
     assert 'http-equiv="refresh" content="600"' in html_text
     assert "Codex 用量看板" in html_text
     assert "prefers-color-scheme: dark" in html_text
-    assert "应用代理" in html_text
+    assert "网络设置" in html_text
     assert "width:57%" in html_text
+
+
+def test_browser_settings_page_contract_exposes_proxy_and_dot_inputs():
+    desktop_widget = load_module("desktop_widget", "desktop_widget.py")
+
+    html_text = desktop_widget.render_browser_settings_html(
+        desktop_widget.WidgetState(
+            title="Codex 用量看板",
+            subtitle="",
+            credits=[],
+            windows=[],
+            proxy_server="http://127.0.0.1:7890",
+            dot_server="664241.alidns.com",
+            status_text="ok",
+            status_color="#4ade80",
+            error_message=None,
+        )
+    )
+
+    assert 'name="proxy"' in html_text
+    assert 'name="dot"' in html_text
