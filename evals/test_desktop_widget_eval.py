@@ -53,3 +53,22 @@ def test_widget_state_contract_covers_required_desktop_fields():
     assert "5小时窗口余量：37%" in state.usage_lines
     assert "周窗口余量：57%" in state.usage_lines
     assert state.status_text == "最近刷新：2026-07-03 10:00:00"
+
+
+def test_browser_fallback_contract_renders_dashboard_html():
+    desktop_widget = load_module("desktop_widget", "desktop_widget.py")
+
+    state = desktop_widget.WidgetState(
+        title="Codex 用量看板",
+        subtitle="重置卡、5 小时余量、周余量",
+        credit_lines=["第 1 张", "发放：2026-07-02 04:03:58"],
+        usage_lines=["5小时窗口余量：35%", "周窗口余量：57%"],
+        status_text="最近刷新：2026-07-03 12:00:00",
+        status_color="#027a48",
+    )
+
+    html_text = desktop_widget.render_browser_html(state, 600)
+
+    assert 'http-equiv="refresh" content="600"' in html_text
+    assert "Codex 用量看板" in html_text
+    assert "周窗口余量：57%" in html_text

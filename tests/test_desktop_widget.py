@@ -88,3 +88,36 @@ def test_parse_args_accepts_proxy_server(monkeypatch):
     args = desktop_widget.parse_args()
 
     assert args.proxy_server == "http://127.0.0.1:7890"
+
+
+def test_load_tk_modules_returns_none_when_tkinter_missing(monkeypatch):
+    original_import = __import__
+
+    def fake_import(name, *args, **kwargs):
+        if name == "tkinter":
+            raise ModuleNotFoundError("No module named 'tkinter'")
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr("builtins.__import__", fake_import)
+
+    tk_module, ttk_module = desktop_widget.load_tk_modules()
+
+    assert tk_module is None
+    assert ttk_module is None
+
+
+def test_render_browser_html_contains_auto_refresh():
+    state = desktop_widget.WidgetState(
+        title="Codex 用量看板",
+        subtitle="重置卡、5 小时余量、周余量",
+        credit_lines=["第 1 张", "发放：2026-07-02 04:03:58"],
+        usage_lines=["5小时窗口余量：35%", "周窗口余量：57%"],
+        status_text="最近刷新：2026-07-03 12:00:00",
+        status_color="#027a48",
+    )
+
+    html_text = desktop_widget.render_browser_html(state, 300)
+
+    assert 'http-equiv="refresh" content="300"' in html_text
+    assert "5小时窗口余量：35%" in html_text
+    assert "立即刷新" in html_text
