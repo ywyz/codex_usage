@@ -46,12 +46,13 @@ def test_widget_state_contract_covers_required_desktop_fields():
         ),
         error_message=None,
         fetched_at=datetime(2026, 7, 3, 10, 0, 0),
+        proxy_server="http://127.0.0.1:7890",
     )
 
     assert state.title == "Codex 用量看板"
-    assert "发放：2026-07-02 04:03:58" in state.credit_lines
-    assert "5小时窗口余量：37%" in state.usage_lines
-    assert "周窗口余量：57%" in state.usage_lines
+    assert state.credits[0].granted_at == "2026-07-02 04:03:58"
+    assert state.windows[0].remaining_percent == 37
+    assert state.windows[1].remaining_percent == 57
     assert state.status_text == "最近刷新：2026-07-03 10:00:00"
 
 
@@ -61,14 +62,37 @@ def test_browser_fallback_contract_renders_dashboard_html():
     state = desktop_widget.WidgetState(
         title="Codex 用量看板",
         subtitle="重置卡、5 小时余量、周余量",
-        credit_lines=["第 1 张", "发放：2026-07-02 04:03:58"],
-        usage_lines=["5小时窗口余量：35%", "周窗口余量：57%"],
+        credits=[
+            desktop_widget.CreditDisplay(
+                index=1,
+                granted_at="2026-07-02 04:03:58",
+                expires_at="2026-08-01 04:03:58",
+            )
+        ],
+        windows=[
+            desktop_widget.WindowDisplay(
+                name="5小时窗口",
+                remaining_percent=35,
+                used_percent=65,
+                reset_at="2026-07-03 14:57:56",
+            ),
+            desktop_widget.WindowDisplay(
+                name="周窗口",
+                remaining_percent=57,
+                used_percent=43,
+                reset_at="2026-07-07 20:16:41",
+            ),
+        ],
+        proxy_server="http://127.0.0.1:7890",
         status_text="最近刷新：2026-07-03 12:00:00",
         status_color="#027a48",
+        error_message=None,
     )
 
     html_text = desktop_widget.render_browser_html(state, 600)
 
     assert 'http-equiv="refresh" content="600"' in html_text
     assert "Codex 用量看板" in html_text
-    assert "周窗口余量：57%" in html_text
+    assert "prefers-color-scheme: dark" in html_text
+    assert "应用代理" in html_text
+    assert "width:57%" in html_text
